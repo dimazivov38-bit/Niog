@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>niog — Tuniogervers</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#10131d;color:#f5f6ff;font-family:Arial,sans-serif}
+header{padding:20px;background:#191e2d;font-size:25px;font-weight:bold;color:#8c9cff}
+main{max-width:600px;margin:25px auto;padding:16px}
+.panel{background:#191e2d;border-radius:18px;padding:20px;margin-bottom:16px}
+input,button{width:100%;padding:14px;margin:7px 0;border:0;border-radius:10px;font-size:16px}
+input{background:#282f43;color:white}
+button{background:#788cff;color:#10131d;font-weight:bold}
+button:disabled{opacity:.5}
+#messages{height:330px;overflow:auto;background:#111624;padding:12px;border-radius:12px}
+.msg{background:#293149;padding:10px 13px;border-radius:12px;margin:8px 0;overflow-wrap:anywhere}
+small{color:#aab3ce}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>✦ niog</header>
+<main>
+<section class="panel" id="auth">
+<h2>Добро пожаловать в niog</h2>
+<input id="email" type="email" placeholder="Электронная почта">
+<input id="password" type="password" placeholder="Пароль">
+<button id="register">Создать аккаунт</button>
+<button id="login">Войти</button>
+<p id="status"></p>
+</section>
+
+<section class="panel hidden" id="app">
+<p id="user"></p>
+<button id="logout">Выйти</button>
+<h3>Твои чаты</h3>
+<button id="create">＋ Создать чат</button>
+<input id="roomCode" placeholder="Код существующего чата">
+<button id="join">Войти в чат</button>
+<p id="roomStatus"></p>
+<div id="chat" class="hidden">
+<h3>Переписка</h3>
+<p>Код чата: <b id="code"></b></p>
+<div id="messages"></div>
+<input id="message" placeholder="Написать сообщение...">
+<button id="send">Отправить</button>
+</div>
+</section>
+</main>
+<script>
+const firebaseConfig = {
+  apiKey: "ВСТАВЬ_API_KEY",
+  authDomain: "ВСТАВЬ_AUTH_DOMAIN",
+  projectId: "ВСТАВЬ_PROJECT_ID",
+  storageBucket: "ВСТАВЬ_STORAGE_BUCKET",
+  messagingSenderId: "ВСТАВЬ_MESSAGING_SENDER_ID",
+  appId: "ВСТАВЬ_APP_ID"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+const $ = id => document.getElementById(id);
+let currentRoom = null;
+let unsubscribe = null;
+
+function status(text){ $("status").textContent=text; }
+
+$("register").onclick = async () => {
+  try {
+    await auth.createUserWithEmailAndPassword(
+      $("email").value.trim(), $("password").value
+    );
+    status("Аккаунт создан!");
+  } catch(e){ status(e.message); }
+};
+
+$("login").onclick = async () => {
+  try {
+    await auth.signInWithEmailAndPassword(
+      $("email").value.trim(), $("password").value
+    );
+  } catch(e){ status(e.message); }
+};
+
+$("logout").onclick = () => auth.signOut();
+
+auth.onAuthStateChanged(user => {
+  $("auth").classList.toggle("hidden",!!user);
+  $("app").classList.toggle("hidden",!user);
+  if(user) $("user").textContent="Ты вошёл: "+user.email;
+  else closeChat();
+});
+
+function closeChat(){
+  if(unsubscribe) unsubscribe();
+  unsubscribe=null;
+  currentRoom=null;
+  $("chat").classList.add("hidden");
+}
+
+async function openRoom(code){
+  code=code.trim();
+  if(!code) return;
+  const ref=db.collection("rooms").doc(code);
+  const snap=await ref.get();
+  if(!snap.exists) throw Error("Чат не найден. Проверь код.");
+  const members=snap.data().members||[];
+  if(!members.includes(auth.currentUser.uid)){
+    await ref.update({members:firebase.firestore.FieldValue.arrayUnion(auth.currentUser.uid)});
+  }
+  currentRoom=code;
+  $("code").textContent=code;
+  $("chat").classList.remove("hidden");
+  if(unsubscribe) unsubscribe();
+  unsubscribe=ref.collection("messages").orderBy("createdAt").limit(100)
+    .onSnapshot(query=>{
+      $("messages").innerHTML="";
+      query.forEach(doc=>{
+        const m=doc.data();
+        const div=document.createElement("div");
+        div.className="msg";
+        const name=document.createElement("b");
+        name.textContent=m.email||"Пользователь";
+        const body=document.createElement("div");
+        body.textContent=m.text||"";
+        div.append(name,body);
+        $("messages").append(div);
+      });
+      $("messages").scrollTop=$("messages").scrollHeight;
+    },e=>{$("roomStatus").textContent=e.message;});
+}
+
+$("create").onclick=async()=>{
+  try{
+    const code=Math.random().toString(36).slice(2,12).toUpperCase();
+    await db.collection("rooms").doc(code).set({
+      members:[auth.currentUser.uid],
+      createdAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    await openRoom(code);
+    $("roomStatus").textContent="Поделись кодом чата с другом: "+code;
+  }catch(e){$("roomStatus").textContent=e.message;}
+};
+
+$("join").onclick=async()=>{
+  try{await openRoom($("roomCode").value);}
+  catch(e){$("roomStatus").textContent=e.message;}
+};
+
+async function sendMessage(){
+  const text=$("message").value.trim();
+  if(!text||!currentRoom) return;
+  $("send").disabled=true;
+  try{
+    await db.collection("rooms").doc(currentRoom).collection("messages").add({
+      text,
+      uid:auth.currentUser.uid,
+      email:auth.currentUser.email,
+      createdAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    $("message").value="";
+  }catch(e){$("roomStatus").textContent=e.message;}
+  $("send").disabled=false;
+}
+$("send").onclick=sendMessage;
+$("message").addEventListener("keydown",e=>{
+  if(e.key==="Enter") sendMessage();
+});
+</script>
+</body>
+</html>
